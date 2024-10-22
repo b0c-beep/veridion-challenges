@@ -209,8 +209,6 @@ def display_stats(results):
     print(f"Reachable but no addresses: {colored(no_address_count, 'yellow')} ({colored(f'{no_address_percentage:.2f}%', 'yellow')})")
     print("==============================\n")
 
-
-
 domains_count = count_domains_in_snappy(websites_path)
 # Loop through the first 10 websites
 for idx, website in enumerate(df['domain']):
@@ -219,6 +217,10 @@ for idx, website in enumerate(df['domain']):
         url = 'http://' + website
         response = requests.get(url, timeout=5)  # timeout after 5 seconds
         
+        if response.status_code != 200:
+            url = 'https://' + website
+            response = requests.get(url, timeout=5)  # timeout after 5 seconds
+
         if response.status_code == 200:
             print(colored(f"Website {website} is reachable.", 'green'))
             website_content = extract_website_content(url)
