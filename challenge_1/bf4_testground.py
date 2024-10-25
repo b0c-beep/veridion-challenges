@@ -4,6 +4,7 @@ import requests
 import pyap
 from urllib.parse import urljoin, urlparse
 from cleantext import clean
+from requests.exceptions import RequestException, SSLError
 
 def read_parquet_file(parquet_file_path):
     """Reads the Snappy-compressed Parquet file and returns the contents as a DataFrame."""
@@ -31,61 +32,52 @@ def extract_website_content(url):
 
 def scrape_page_content(url):
     """Fetches and cleans the page content."""
-    response = requests.get(url)
-    soup = BeautifulSoup(response.text, 'html.parser')
-    
-    # Extract text (adjust this as per the structure of the page)
-    page_content = soup.get_text(separator='\n').strip()
-    
-    # Return the content, clean it further if needed
-    return page_content
+    try:
+        response = requests.get(url, verify=True)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Extract text (adjust this as per the structure of the page)
+        #page_content = soup.get_text(separator='\n').strip()
+        
+        # Return the content, clean it further if needed
+        return soup
+    except SSLError:
+        # Skip if SSL certificate is invalid
+        print(f"Skipping insecure site (SSL verification failed): {url}")
+    except RequestException as e:
+        # Catch any other request-related errors
+        print(f"Error fetching {url}: {e}")
+    return None
 
 def scrape_links_and_content(start_url):
-    """Scrapes all reachable pages starting from the given URL, extracting text from address-related tags only, ensuring no duplicates."""
+    """Scrapes all reachable pages starting from the given URL and visits unique links only."""
     
     visited_urls = set()  # Set to keep track of visited URLs
-    urls_to_visit = [start_url]  # List to manage URLs to visit
-    all_scraped_content = set()  # Use a set to hold unique scraped content
+    visited_hrefs = set()  # Set to keep track of visited hrefs
+    #urls_to_visit = [start_url]  # List to manage URLs to visit
+    all_scraped_content = ""  # String to hold all scraped content
 
-    while urls_to_visit:
-        current_url = urls_to_visit.pop(0)  # Get the next URL to visit
-        
-        # Skip if we've already visited this URL
-        if current_url in visited_urls:
-            continue
-        
-        visited_urls.add(current_url)  # Mark this URL as visited
-        
-        try:
-            # Fetch the page content
-            response = requests.get(current_url)
-            response.raise_for_status()  # Raise an error for bad responses
+    page_soup = scrape_page_content(start_url)
+    if page_soup is None:
+        print(f"Failed to scrape the content of {start_url}")
+        return None
+    all_scraped_content += page_soup.get_text() + '\n'  # Append the content to the main string
 
-            # Parse the page content
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            # Find and store unique text from address-related tags
-            address_tags = soup.find_all(['address', 'div', 'span', 'p', 'li'])
-            for tag in address_tags:
-                address = tag.get_text(strip=True)
-                if address:  # Ensure the tag is not empty
-                    all_scraped_content.add(address)  # Add address to the set to ensure uniqueness
+    # Find all <a> tags on the page
+    links = page_soup.find_all('a', href=True)  # Only get links that have an href attribute
 
-            # Find all <a> tags on the page
-            links = soup.find_all('a', href=True)  # Only get links that have an href attribute
+    for link in links:
+        href = link['href']
+        full_url = urljoin(start_url, href)  # Construct absolute URL
 
-            for link in links:
-                href = link['href']
-                full_url = urljoin(current_url, href)  # Construct absolute URL
-                
-                # Check if the link is internal and hasn't been visited
-                if urlparse(full_url).netloc == urlparse(start_url).netloc and full_url not in visited_urls:
-                    urls_to_visit.append(full_url)  # Add new links to the list to visit
-                    
-        except requests.RequestException as e:
-            print(f"Error fetching {current_url}: {e}")
+        # Check if the href is internal and has not been visited
+        if urlparse(full_url).netloc == urlparse(start_url).netloc and href not in visited_hrefs:
+            visited_urls.add(full_url)  # Mark the URL as visited
+            visited_hrefs.add(href)  # Mark the href as visited
+            link_soup = scrape_page_content(full_url)  # Scrape the content of the link
+            all_scraped_content += link_soup.get_text() + '\n'  # Append the content to the main string
 
-    return '\n'.join(all_scraped_content)  # Return only the scraped content
+    return all_scraped_content
 
 def extract_pyap(text):
     """Extract both US and UK addresses using pyap and ensure uniqueness."""
@@ -147,17 +139,16 @@ def clean_website_content2(text):
     cleaned_text = '\n'.join(cleaned_lines)
 
     # Optionally remove non-alphanumeric characters, keeping basic punctuation
-    cleaned_text = ''.join(c for c in cleaned_text if c.isalnum() or c.isspace() or c in ",.;:!?")
+    cleaned_text = ''.join(c for c in cleaned_text if c.isalnum() or c.isspace() or c in ";:!?")
 
     return cleaned_text
-
 
 def main():
     # File path to the Parquet file
     parquet_file_path = './challenge_1/list_of_company_websites.snappy.parquet'  # Replace with your snappy-compressed parquet file path
 
     # Domain to check in each website
-    domain_to_check = 'draftingdesign.com'  
+    domain_to_check = 'clubk-9.com'  
     url_to_check = 'https://' + domain_to_check
 
     # Read the Parquet data into a DataFrame
@@ -165,6 +156,7 @@ def main():
     
     website_content = scrape_links_and_content(url_to_check)
     cleaned_content = clean_website_content2(website_content)
+    #cleaned_content = remove_repeating_words(cleaned_content)
     #print(website_content)
     save_content_to_notepad(cleaned_content, './challenge_1/' + domain_to_check + '.txt')
     extracted_addresses = extract_pyap(cleaned_content)

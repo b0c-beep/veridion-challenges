@@ -13,6 +13,11 @@ from openpyxl.styles import PatternFill, Alignment
 import os
 from cleantext import clean
 from datetime import datetime
+import usaddress
+from urllib.parse import urljoin, urlparse
+from requests.exceptions import RequestException, SSLError
+from geopy.geocoders import Nominatim
+from geopy.exc import GeocoderTimedOut, GeocoderServiceError
 
 # Initialize colorama
 init()  
@@ -26,18 +31,61 @@ pd.set_option('display.max_columns', None)
 # Read the Parquet file
 df = pd.read_parquet(websites_path, engine='pyarrow') 
 
-def extract_website_content(url):
-    """Fetch and return the text content of the website."""
+# Initialize the geolocator
+geolocator = Nominatim(user_agent="address_validator")
+
+def scrape_page_content(url):
+    """Fetches and cleans the page content."""
     try:
-        response = requests.get(url)
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.content, 'html.parser')
-            return soup.get_text()
-        else:
-            print(f"Failed to retrieve {url}")
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.82 Safari/537.36'}
+        response = requests.get(url, verify=True, headers=headers)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Extract text (adjust this as per the structure of the page)
+        #page_content = soup.get_text(separator='\n').strip()
+        
+        # Return the content, clean it further if needed
+        return soup
+    except SSLError:
+        # Skip if SSL certificate is invalid
+        print(f"Skipping insecure site (SSL verification failed): {url}")
+    except RequestException as e:
+        # Catch any other request-related errors
+        print(f"Error fetching {url}: {e}")
+    return None
+
+def scrape_links_and_content(start_url):
+    """Scrapes all reachable pages starting from the given URL and visits unique links only."""
+    
+    try:
+        visited_urls = set()  # Set to keep track of visited URLs
+        visited_hrefs = set()  # Set to keep track of visited hrefs
+        #urls_to_visit = [start_url]  # List to manage URLs to visit
+        all_scraped_content = ""  # String to hold all scraped content
+
+        page_soup = scrape_page_content(start_url)
+        if page_soup is None:
+            print(f"Failed to scrape the content of {start_url}")
             return None
+        all_scraped_content += page_soup.get_text() + '\n'  # Append the content to the main string
+
+        # Find all <a> tags on the page
+        links = page_soup.find_all('a', href=True)  # Only get links that have an href attribute
+
+        for link in links:
+            href = link['href']
+            full_url = urljoin(start_url, href)  # Construct absolute URL
+
+            # Check if the href is internal and has not been visited
+            if urlparse(full_url).netloc == urlparse(start_url).netloc and href not in visited_hrefs:
+                visited_urls.add(full_url)  # Mark the URL as visited
+                visited_hrefs.add(href)  # Mark the href as visited
+                link_soup = scrape_page_content(full_url)  # Scrape the content of the link
+                all_scraped_content += link_soup.get_text() + '\n'  # Append the content to the main string
+
+        return all_scraped_content
     except Exception as e:
-        print(f"An error occurred while fetching {url}: {e}")
+        print(f"Error scraping links and content: {e}")
         return None
 
 def clean_website_content(text):
@@ -75,6 +123,7 @@ def extract_pyap(text):
         extracted_addresses.append(str(address))
 
     return extracted_addresses if extracted_addresses else None
+
 
 def count_domains_in_snappy(file_path):
     """Return the number of domains in a Snappy Parquet file."""
@@ -209,6 +258,60 @@ def display_stats(results):
     print(f"Reachable but no addresses: {colored(no_address_count, 'yellow')} ({colored(f'{no_address_percentage:.2f}%', 'yellow')})")
     print("==============================\n")
 
+def extract_usaddress(text):
+    """Extract addresses using the usaddress library."""
+    try:
+        if text is None:
+            return None
+
+        #results = []
+        # Parse the text using usaddress
+        parsed_addresses = usaddress.tag(text)
+        components = parsed_addresses[0]  
+        usaddress_result = (
+                    'USA',  # Assuming it's a USA address
+                    components.get('StateName', None),  # Region (State)
+                    components.get('PlaceName', None),  # City
+                    components.get('ZipCode', None),  # Postcode
+                    components.get('StreetName', None),  # Road
+                    components.get('AddressNumber', None)  # Road number
+        )
+        if all(component is not None for component in usaddress_result):
+            return usaddress_result
+        else: return None
+    except Exception as e:
+        print(f"Error extracting address using usaddress: {e}")
+        return None
+    
+
+def parse_address_for_geopy(address_text):
+    """Parse and format address using usaddress."""
+    try:
+        parsed_address = usaddress.tag(address_text)[0]
+        formatted_address = "{}, {}, {}, {}".format(
+            parsed_address.get('AddressNumber', ''),
+            parsed_address.get('StreetName', ''),
+            parsed_address.get('PlaceName', ''),
+            parsed_address.get('StateName', ''),
+        )
+        return formatted_address
+    except usaddress.RepeatedLabelError:
+        print("Error parsing address:", address_text)
+        return None
+
+def validate_address_with_geopy(formatted_address):
+    """Validate address with geopy."""
+    try:
+        location = geolocator.geocode(formatted_address)
+        if location:
+            return {"latitude": location.latitude, "longitude": location.longitude, "address": location.address}
+        else:
+            return None
+    except (GeocoderTimedOut, GeocoderServiceError) as e:
+        print(f"Geocoding error for {formatted_address}: {e}")
+        return None
+
+
 domains_count = count_domains_in_snappy(websites_path)
 # Loop through the first 10 websites
 for idx, website in enumerate(df['domain']):
@@ -223,20 +326,44 @@ for idx, website in enumerate(df['domain']):
 
         if response.status_code == 200:
             print(colored(f"Website {website} is reachable.", 'green'))
-            website_content = extract_website_content(url)
-            
+            #website_content = extract_website_content(url)
+            website_content = scrape_links_and_content(url)
+
             # Clean the website content
             cleaned_content = clean_website_content(website_content)
             
             # Extract addresses using various methods
+            usaddress_results = []
             pyap_results = extract_pyap(cleaned_content)
+            if pyap_results:
+                for address in pyap_results:
+                    usaddress_results.append(extract_usaddress(address))
+
+            # Remove duplicates from usaddress_results
+            usaddress_results = list(set(usaddress_results))
+
+            # Check if usaddress_results contains only None objects
+            if all(result is None for result in usaddress_results):
+                usaddress_results = []
+
+            #Validate addresses using geopy
+            geopy_validated_addresses = []
+            for address in usaddress_results:
+                if address is not None:
+                    formatted_address = ', '.join(filter(None, address))
+                    parsed_geopy = parse_address_for_geopy(formatted_address)
+                    geopy_results = validate_address_with_geopy(parsed_geopy)
+                    if geopy_results:
+                        geopy_validated_addresses.append(address)
 
             # Store the results
             results.append({
                 'Domain': website,
                 'URL': f'=HYPERLINK("{url}", "{url}")',
                 'Status': 'Reachable' if pyap_results else 'Reachable - No Addresses',
-                'PyAP': pyap_results if pyap_results else 'N/A',
+                #'PyAP': pyap_results if pyap_results else 'N/A',
+                #'USAddress': usaddress_results if usaddress_results else 'N/A',
+                'Validated with GeoPy': geopy_validated_addresses if geopy_validated_addresses else 'Address(es) found but not validated'
             })
             save_results_to_excel(results)
             display_stats(results)
@@ -246,7 +373,7 @@ for idx, website in enumerate(df['domain']):
                 'Domain': website,
                 'URL': f'=HYPERLINK("{url}", "{url}")',
                 'Status': 'Unreachable',
-                'PyAP': 'N/A',
+                #'PyAP': 'N/A',
             })
             save_results_to_excel(results)
             display_stats(results)
@@ -256,7 +383,7 @@ for idx, website in enumerate(df['domain']):
             'Domain': website,
             'URL': f'=HYPERLINK("{url}", "{url}")',
             'Status': 'Unreachable',
-            'PyAP': 'N/A',
+            #'PyAP': 'N/A',
         })
         save_results_to_excel(results)
         display_stats(results)
