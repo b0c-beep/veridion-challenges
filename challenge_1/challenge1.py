@@ -22,7 +22,7 @@ from geopy.exc import GeocoderTimedOut, GeocoderServiceError
 # Initialize colorama
 init()  
 
-websites_path = './challenge_1/list_of_company_websites.snappy.parquet'
+websites_path = './challenge_1/list_of_company_websites.snappy.parquet' # Path to the Parquet file containing the list of websites
 
 # Set display options to show all rows and columns
 pd.set_option('display.max_rows', None)
@@ -41,10 +41,6 @@ def scrape_page_content(url):
         response = requests.get(url, verify=True, headers=headers)
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # Extract text (adjust this as per the structure of the page)
-        #page_content = soup.get_text(separator='\n').strip()
-        
-        # Return the content, clean it further if needed
         return soup
     except SSLError:
         # Skip if SSL certificate is invalid
@@ -60,10 +56,9 @@ def scrape_links_and_content(start_url):
     try:
         visited_urls = set()  # Set to keep track of visited URLs
         visited_hrefs = set()  # Set to keep track of visited hrefs
-        #urls_to_visit = [start_url]  # List to manage URLs to visit
         all_scraped_content = ""  # String to hold all scraped content
 
-        page_soup = scrape_page_content(start_url)
+        page_soup = scrape_page_content(start_url) # Scrape the content of the start URL
         if page_soup is None:
             print(f"Failed to scrape the content of {start_url}")
             return None
@@ -72,6 +67,7 @@ def scrape_links_and_content(start_url):
         # Find all <a> tags on the page
         links = page_soup.find_all('a', href=True)  # Only get links that have an href attribute
 
+        # Loop through each link and scrape its content
         for link in links:
             href = link['href']
             full_url = urljoin(start_url, href)  # Construct absolute URL
@@ -98,12 +94,8 @@ def clean_website_content(text):
     # Optionally remove non-alphanumeric characters, keeping basic punctuation
     cleaned_text = ''.join(c for c in cleaned_text if c.isalnum() or c.isspace() or c in ",.;:!?")
     
-    # Further text normalization (you can add more rules here)
-    
     return cleaned_text
 
-# Initialize results list
-results = []
 
 def extract_pyap(text):
     """Extract both US and UK addresses using pyap."""
@@ -149,7 +141,6 @@ def apply_stats_colors(worksheet, stats_df, colors):
         else:
             fill_color = None
 
-
         if fill_color:
             fill = PatternFill(start_color=fill_color, end_color=fill_color, fill_type="solid")
             # Apply the fill to the correct row in the worksheet
@@ -167,21 +158,23 @@ def save_results_to_excel(results):
 
     total_sites = len(results)
     
-    # Count reachable, unreachable, and reachable-but-no-address
+    # Count reachable, unreachable, reachable-but-no-address and validated sites
     reachable_count = sum(1 for result in results if result['Status'] == 'Reachable')
     unreachable_count = sum(1 for result in results if result['Status'] == 'Unreachable')
     no_address_count = sum(1 for result in results if result['Status'] == 'Reachable - No Addresses')
+    validated_count = sum(1 for result in results if result['Status'] == 'Reachable' and result['Validated with GeoPy'] != 'Not validated')
 
     # Calculate percentages
     reachable_percentage = (reachable_count / total_sites) * 100
     unreachable_percentage = (unreachable_count / total_sites) * 100
     no_address_percentage = (no_address_count / total_sites) * 100
+    validated_percentage = (validated_count / total_sites) * 100
 
     # Create a DataFrame for the stats
     stats_data = {
-        'Metric': ['Reachable sites', 'Unreachable sites', 'Reachable but no addresses', 'Total sites checked'],
-        'Count': [reachable_count, unreachable_count, no_address_count, total_sites],
-        'Percentage': [f'{reachable_percentage:.2f}%', f'{unreachable_percentage:.2f}%', f'{no_address_percentage:.2f}%', None]  # Fixed total sites percentage
+        'Metric': ['Reachable sites', 'Unreachable sites', 'Reachable but no addresses', 'Reachable with validated address', 'Total sites checked'],
+        'Count': [reachable_count, unreachable_count, no_address_count, validated_count, total_sites],
+        'Percentage': [f'{reachable_percentage:.2f}%', f'{unreachable_percentage:.2f}%', f'{no_address_percentage:.2f}%', f'{validated_percentage:.2f}%', None]  # Fixed total sites percentage
     }
     stats_df = pd.DataFrame(stats_data)
 
@@ -192,6 +185,7 @@ def save_results_to_excel(results):
         'No Address': 'D9D9D9',  # Light Gray
     }
 
+    # Save the results to an Excel file
     with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
         df.to_excel(writer, index=False, sheet_name='Results')
 
@@ -234,26 +228,28 @@ def save_results_to_excel(results):
         # Call your coloring function here
         apply_stats_colors(worksheet, stats_df, colors)
         
-    #print(f"Results saved to {output_path}")
 
 def display_stats(results):
-    """Calculate and display statistics of reachable, unreachable, and reachable-but-no-address sites."""
+    """Calculate and display statistics of reachable, unreachable, reachable-but-no-address and validated sites."""
     total_sites = len(results)
     
     # Count reachable, unreachable, and reachable-but-no-address
     reachable_count = sum(1 for result in results if result['Status'] == 'Reachable')
     unreachable_count = sum(1 for result in results if result['Status'] == 'Unreachable')
     no_address_count = sum(1 for result in results if result['Status'] == 'Reachable - No Addresses')
+    validated_count = sum(1 for result in results if result['Status'] == 'Reachable' and result['Validated with GeoPy'] != 'Not validated')
 
     # Calculate percentages
     reachable_percentage = (reachable_count / total_sites) * 100
     unreachable_percentage = (unreachable_count / total_sites) * 100
     no_address_percentage = (no_address_count / total_sites) * 100
+    validated_percentage = (validated_count / total_sites) * 100
 
     # Display stats with colors
     print("\n===== " + colored("Summary of Results", 'cyan') + " =====")
     print(f"Total sites checked: {colored(total_sites, 'white')}")
     print(f"Reachable sites: {colored(reachable_count, 'green')} ({colored(f'{reachable_percentage:.2f}%', 'green')})")
+    print(f"Validated addresses: {colored(validated_count, 'green')} ({colored(f'{validated_percentage:.2f}%', 'green')})")
     print(f"Unreachable sites: {colored(unreachable_count, 'red')} ({colored(f'{unreachable_percentage:.2f}%', 'red')})")
     print(f"Reachable but no addresses: {colored(no_address_count, 'yellow')} ({colored(f'{no_address_percentage:.2f}%', 'yellow')})")
     print("==============================\n")
@@ -264,7 +260,6 @@ def extract_usaddress(text):
         if text is None:
             return None
 
-        #results = []
         # Parse the text using usaddress
         parsed_addresses = usaddress.tag(text)
         components = parsed_addresses[0]  
@@ -276,9 +271,11 @@ def extract_usaddress(text):
                     components.get('StreetName', None),  # Road
                     components.get('AddressNumber', None)  # Road number
         )
+        # Check if all components are not None
         if all(component is not None for component in usaddress_result):
             return usaddress_result
         else: return None
+
     except Exception as e:
         print(f"Error extracting address using usaddress: {e}")
         return None
@@ -287,6 +284,7 @@ def extract_usaddress(text):
 def parse_address_for_geopy(address_text):
     """Parse and format address using usaddress."""
     try:
+        # Prepare the address for geopy
         parsed_address = usaddress.tag(address_text)[0]
         formatted_address = "{}, {}, {}, {}".format(
             parsed_address.get('AddressNumber', ''),
@@ -312,21 +310,27 @@ def validate_address_with_geopy(formatted_address):
         return None
 
 
+# Initialize results list
+results = []
+
+# Get the total number of domains in the Snappy Parquet file
 domains_count = count_domains_in_snappy(websites_path)
-# Loop through the first 10 websites
+
+# Loop through the websites and check their status
 for idx, website in enumerate(df['domain']):
     try:
         print(f"Checking website {idx + 1}/{domains_count}: {website}")
         url = 'http://' + website
         response = requests.get(url, timeout=5)  # timeout after 5 seconds
         
+        # Check if the status code is not 200
         if response.status_code != 200:
             url = 'https://' + website
             response = requests.get(url, timeout=5)  # timeout after 5 seconds
 
+        # Check if the website is reachable
         if response.status_code == 200:
             print(colored(f"Website {website} is reachable.", 'green'))
-            #website_content = extract_website_content(url)
             website_content = scrape_links_and_content(url)
 
             # Clean the website content
@@ -361,20 +365,22 @@ for idx, website in enumerate(df['domain']):
                 'Domain': website,
                 'URL': f'=HYPERLINK("{url}", "{url}")',
                 'Status': 'Reachable' if pyap_results else 'Reachable - No Addresses',
-                #'PyAP': pyap_results if pyap_results else 'N/A',
-                #'USAddress': usaddress_results if usaddress_results else 'N/A',
-                'Validated with GeoPy': geopy_validated_addresses if geopy_validated_addresses else 'Address(es) found but not validated'
+                'Validated with GeoPy': geopy_validated_addresses if geopy_validated_addresses else 'Not validated'
             })
+
+            # Save the results to Excel
             save_results_to_excel(results)
+
+            # Display the statistics
             display_stats(results)
         else:
             print(colored(f"Website {website} is not reachable. Status code: {response.status_code}", 'red'))
             results.append({
                 'Domain': website,
                 'URL': f'=HYPERLINK("{url}", "{url}")',
-                'Status': 'Unreachable',
-                #'PyAP': 'N/A',
+                'Status': 'Unreachable'
             })
+
             save_results_to_excel(results)
             display_stats(results)
     except requests.exceptions.RequestException as e:
@@ -383,10 +389,8 @@ for idx, website in enumerate(df['domain']):
             'Domain': website,
             'URL': f'=HYPERLINK("{url}", "{url}")',
             'Status': 'Unreachable',
-            #'PyAP': 'N/A',
         })
+
         save_results_to_excel(results)
         display_stats(results)
 
-# Save results to Excel
-#save_results_to_excel(results)
